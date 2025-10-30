@@ -15,13 +15,13 @@ function basicAuthHeader(email, token) {
 
 // Jira aceita "started" como "YYYY-MM-DDTHH:mm:ss.SSSZ" (ex.: +0000).
 // Vamos gerar no fuso do usuário se vier só date/hora local.
-function toJiraStartedISO(input, tz = "UTC") {
+function toJiraStartedISO(input) {
   // Se já vier um ISO com offset tipo "+0000" ou "+03:00", apenas retorna
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?([+-]\d{2}:?\d{2}|Z|[+-]\d{4})$/.test(input)) {
     // Normaliza "+03:00" para "+0300"
     return input.replace(/([+-]\d{2}):(\d{2})$/, (_m, h, m) => `${h}${m}`);
   }
-  // Caso contrário, interpreta como local e aplica timezone
+  // Caso contrário, interpreta como local e aplica timezone do sistema
   const dt = new Date(input);
   if (isNaN(dt)) throw new Error(`started inválido: ${input}`);
 
@@ -64,10 +64,24 @@ async function jiraFetch(method, path, body) {
 
   const text = await res.text();
   let json;
-  try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text }; }
+  try { 
+    json = text ? JSON.parse(text) : null; 
+  } catch (parseError) {
+    console.error('⚠️ Erro ao fazer parse da resposta JSON:', parseError.message);
+    json = { raw: text }; 
+  }
 
   if (!res.ok) {
-    const msg = json?.errorMessages?.join(" | ") || json?.errors || text || res.statusText;
+    let msg;
+    if (json?.errorMessages?.length) {
+      msg = json.errorMessages.join(" | ");
+    } else if (json?.errors) {
+      msg = typeof json.errors === 'object' 
+        ? JSON.stringify(json.errors) 
+        : json.errors;
+    } else {
+      msg = text || res.statusText;
+    }
     throw new Error(`Jira API ${res.status} ${res.statusText}: ${msg}`);
   }
   return json ?? {};
@@ -78,9 +92,9 @@ class JiraMCPServer {
   constructor() {
     this.server = new Server(
       {
-        name: "jira-worklog-mcp",
-        version: "1.0.0",
-        description: "MCP Server para pesquisar issues e lançar worklog no Jira Cloud."
+        name: "jira-mcp-server",
+        version: "1.1.0",
+        description: "MCP Server para gerenciar issues, worklogs, comentários e transições no Jira Cloud."
       },
       {
         capabilities: {
@@ -142,13 +156,65 @@ class JiraMCPServer {
           {
             name: "jira.getIssue",
             title: "Obter Issue",
-            description: "Obtém dados de uma issue do Jira Cloud.",
+            description: "Obtém dados completos de uma issue do Jira Cloud, incluindo descrição, status, comentários e outros campos.",
             inputSchema: {
               type: "object",
               required: ["issueKey"],
               properties: {
-                issueKey: { type: "string" },
-                fields: { type: "array", items: { type: "string" } }
+                issueKey: { type: "string", description: "Chave da issue (ex.: ABC-123)" },
+                expand: { 
+                  type: "array", 
+                  items: { type: "string" },
+                  description: "Campos expandidos como 'renderedFields' para descrição formatada"
+                }
+              }
+            }
+          },
+          {
+            name: "jira.getComments",
+            title: "Obter Comentários",
+            description: "Obtém todos os comentários de uma issue do Jira Cloud.",
+            inputSchema: {
+              type: "object",
+              required: ["issueKey"],
+              properties: {
+                issueKey: { type: "string", description: "Chave da issue (ex.: ABC-123)" },
+                maxResults: { type: "integer", description: "Número máximo de comentários (padrão: 50)" },
+                orderBy: { type: "string", enum: ["created", "-created", "+created"], description: "Ordenação dos comentários" }
+              }
+            }
+          },
+          {
+            name: "jira.getTransitions",
+            title: "Obter Transições Disponíveis",
+            description: "Obtém todas as transições de status disponíveis para uma issue, considerando as regras do workflow do board.",
+            inputSchema: {
+              type: "object",
+              required: ["issueKey"],
+              properties: {
+                issueKey: { type: "string", description: "Chave da issue (ex.: ABC-123)" },
+                expand: { type: "string", description: "Campos para expandir (ex.: 'transitions.fields')" }
+              }
+            }
+          },
+          {
+            name: "jira.transitionIssue",
+            title: "Transicionar Issue",
+            description: "Move uma issue para outro status usando o ID da transição. Use jira.getTransitions para obter as transições disponíveis.",
+            inputSchema: {
+              type: "object",
+              required: ["issueKey", "transitionId"],
+              properties: {
+                issueKey: { type: "string", description: "Chave da issue (ex.: ABC-123)" },
+                transitionId: { type: "string", description: "ID da transição (obtido via jira.getTransitions)" },
+                fields: { 
+                  type: "object", 
+                  description: "Campos adicionais requeridos pela transição (ex.: resolution, assignee)"
+                },
+                comment: {
+                  type: "string",
+                  description: "Comentário opcional ao transicionar"
+                }
               }
             }
           }
@@ -168,6 +234,12 @@ class JiraMCPServer {
             return await this.searchJql(args);
           case "jira.getIssue":
             return await this.getIssue(args);
+          case "jira.getComments":
+            return await this.getComments(args);
+          case "jira.getTransitions":
+            return await this.getTransitions(args);
+          case "jira.transitionIssue":
+            return await this.transitionIssue(args);
           default:
             throw new Error(`Ferramenta desconhecida: ${name}`);
         }
@@ -186,8 +258,7 @@ class JiraMCPServer {
   async addWorklog(args) {
     const { issueKey, timeSpentSeconds, comment, started, visibility } = args;
     const startedStr = toJiraStartedISO(
-      started || new Date().toISOString(),
-      process.env.JIRA_USER_TZ || "UTC"
+      started || new Date().toISOString()
     );
 
     const body = {
@@ -209,12 +280,14 @@ class JiraMCPServer {
 
   async searchJql(args) {
     const { jql, maxResults = 25, fields } = args;
-    const body = {
-      jql,
-      maxResults,
-      fields: fields ?? ["summary", "status", "assignee", "timetracking"]
-    };
-    const res = await jiraFetch("GET", `/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${(fields || ["summary", "status", "assignee", "timetracking"]).join(",")}`);
+    const defaultFields = ["summary", "status", "assignee", "timetracking"];
+    const fieldsList = (fields || defaultFields).join(",");
+    
+    const res = await jiraFetch(
+      "GET", 
+      `/rest/api/3/search?jql=${encodeURIComponent(jql)}&maxResults=${maxResults}&fields=${fieldsList}`
+    );
+    
     const issues = (res.issues || []).map((it) => ({
       key: it.key,
       id: it.id,
@@ -233,13 +306,156 @@ class JiraMCPServer {
   }
 
   async getIssue(args) {
-    const { issueKey, fields } = args;
-    const qs = fields?.length ? `?fields=${encodeURIComponent(fields.join(","))}` : "";
-    const res = await jiraFetch("GET", `/rest/api/3/issue/${encodeURIComponent(issueKey)}${qs}`);
+    const { issueKey, expand } = args;
+    let path = `/rest/api/3/issue/${encodeURIComponent(issueKey)}`;
+    
+    // Campos importantes (removido 'comment' para melhor performance - use jira.getComments)
+    const fields = "summary,description,status,assignee,created,updated,priority,issuetype,project";
+    const params = new URLSearchParams({ fields });
+    
+    if (expand && expand.length > 0) {
+      params.append('expand', expand.join(','));
+    }
+    
+    const res = await jiraFetch("GET", `${path}?${params.toString()}`);
+    
+    // Formatar resposta de forma mais legível
+    const formatted = {
+      key: res.key,
+      id: res.id,
+      self: res.self,
+      fields: {
+        summary: res.fields?.summary,
+        description: res.fields?.description,
+        status: {
+          name: res.fields?.status?.name,
+          id: res.fields?.status?.id,
+          statusCategory: res.fields?.status?.statusCategory?.name
+        },
+        assignee: res.fields?.assignee ? {
+          displayName: res.fields.assignee.displayName,
+          emailAddress: res.fields.assignee.emailAddress,
+          accountId: res.fields.assignee.accountId
+        } : null,
+        priority: res.fields?.priority?.name,
+        issuetype: res.fields?.issuetype?.name,
+        project: {
+          key: res.fields?.project?.key,
+          name: res.fields?.project?.name
+        },
+        created: res.fields?.created,
+        updated: res.fields?.updated
+      }
+    };
+    
     return {
       content: [{
         type: "text",
-        text: `📋 **Dados da issue ${issueKey}:**\n\n\`\`\`json\n${JSON.stringify(res, null, 2)}\n\`\`\``
+        text: `📋 **Dados da issue ${issueKey}:**\n\n\`\`\`json\n${JSON.stringify(formatted, null, 2)}\n\`\`\``
+      }]
+    };
+  }
+
+  async getComments(args) {
+    const { issueKey, maxResults = 50, orderBy = "created" } = args;
+    const params = new URLSearchParams({
+      maxResults: maxResults.toString(),
+      orderBy
+    });
+    
+    const res = await jiraFetch("GET", `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment?${params.toString()}`);
+    
+    const comments = (res.comments || []).map(c => ({
+      id: c.id,
+      author: {
+        displayName: c.author?.displayName,
+        emailAddress: c.author?.emailAddress,
+        accountId: c.author?.accountId
+      },
+      body: c.body,
+      created: c.created,
+      updated: c.updated,
+      visibility: c.visibility
+    }));
+    
+    return {
+      content: [{
+        type: "text",
+        text: `💬 **Comentários da issue ${issueKey} (${res.total} total):**\n\n\`\`\`json\n${JSON.stringify({ total: res.total, maxResults: res.maxResults, comments }, null, 2)}\n\`\`\``
+      }]
+    };
+  }
+
+  async getTransitions(args) {
+    const { issueKey, expand } = args;
+    let path = `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`;
+    
+    if (expand) {
+      path += `?expand=${encodeURIComponent(expand)}`;
+    }
+    
+    const res = await jiraFetch("GET", path);
+    
+    const transitions = (res.transitions || []).map(t => ({
+      id: t.id,
+      name: t.name,
+      to: {
+        id: t.to?.id,
+        name: t.to?.name,
+        statusCategory: t.to?.statusCategory?.name
+      },
+      hasScreen: t.hasScreen,
+      isGlobal: t.isGlobal,
+      isInitial: t.isInitial,
+      isConditional: t.isConditional,
+      fields: t.fields
+    }));
+    
+    return {
+      content: [{
+        type: "text",
+        text: `🔄 **Transições disponíveis para ${issueKey}:**\n\n\`\`\`json\n${JSON.stringify({ transitions, expand: res.expand }, null, 2)}\n\`\`\`\n\n**Dica:** Use o 'id' da transição desejada com jira.transitionIssue para mover a issue. Se não houver transição direta para o status desejado, será necessário fazer transições intermediárias.`
+      }]
+    };
+  }
+
+  async transitionIssue(args) {
+    const { issueKey, transitionId, fields, comment } = args;
+    
+    const body = {
+      transition: { id: transitionId }
+    };
+    
+    if (fields) {
+      body.fields = fields;
+    }
+    
+    if (comment) {
+      body.update = {
+        comment: [{
+          add: {
+            body: {
+              type: "doc",
+              version: 1,
+              content: [{
+                type: "paragraph",
+                content: [{ type: "text", text: comment }]
+              }]
+            }
+          }
+        }]
+      };
+    }
+    
+    await jiraFetch("POST", `/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, body);
+    
+    // Buscar novo status da issue
+    const updated = await jiraFetch("GET", `/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=status`);
+    
+    return {
+      content: [{
+        type: "text",
+        text: `✅ **Issue ${issueKey} transicionada com sucesso!**\n\nNovo status: **${updated.fields?.status?.name}**\n\n⚠️ **Importante:** Se você precisa mover para um status específico mas não há transição direta disponível, use jira.getTransitions para verificar as transições intermediárias necessárias.`
       }]
     };
   }
