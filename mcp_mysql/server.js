@@ -396,16 +396,41 @@ class MySQLControlBridge {
   }
 
   async executeSelectQuery(args) {
-    // Validar que é SELECT
-    const query = args.query.trim();
+    // Normalizar query: trim inicial
+    let query = args.query.trim();
+    
+    // Verificar se tem trailing semicolon e salvar
+    const hasTrailingSemicolon = query.endsWith(';');
+    if (hasTrailingSemicolon) {
+      query = query.slice(0, -1).trim();
+    }
+    
+    // Remover comentários SQL trailing para evitar inserir LIMIT em comentários
+    // Comentários de linha (-- comentário)
+    query = query.replace(/--.*$/gm, '');
+    // Comentários de bloco (/* comentário */)
+    query = query.replace(/\/\*[\s\S]*?\*\//g, '');
+    // Remover espaços extras após remover comentários
+    query = query.trim().replace(/\s+/g, ' ');
+    
+    // Validar que é SELECT após limpeza
     if (!query.toLowerCase().startsWith('select')) {
       throw new Error('Apenas queries SELECT são permitidas');
     }
 
+    // Detectar LIMIT existente usando word boundary (case-insensitive)
+    // Isso evita falsos positivos como "LIMITATIONS" ou "UNLIMITED"
+    const hasLimit = /\blimit\b/i.test(query);
+    
     const limit = Math.min(args.limit || 100, 1000);
-    const finalQuery = query.toLowerCase().includes('limit')
-      ? query
+    let finalQuery = hasLimit 
+      ? query 
       : `${query} LIMIT ${limit}`;
+    
+    // Re-adicionar semicolon original se existia
+    if (hasTrailingSemicolon) {
+      finalQuery += ';';
+    }
 
     const [results] = await this.connection.execute(finalQuery);
 
