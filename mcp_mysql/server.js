@@ -616,6 +616,48 @@ class MySQLControlBridge {
       throw new Error('Query é obrigatória');
     }
 
+    // Normalizar query: remover espaços em branco e comentários SQL
+    let normalizedQuery = query.trim();
+    
+    // Remover comentários SQL de linha única (-- comentário)
+    normalizedQuery = normalizedQuery.replace(/--.*$/gm, '');
+    
+    // Remover comentários SQL de bloco (/* comentário */)
+    normalizedQuery = normalizedQuery.replace(/\/\*[\s\S]*?\*\//g, '');
+    
+    // Remover espaços em branco extras e normalizar
+    normalizedQuery = normalizedQuery.trim().replace(/\s+/g, ' ');
+
+    // Extrair o primeiro comando SQL (case-insensitive)
+    const firstKeywordMatch = normalizedQuery.match(/^\s*(\w+)/i);
+    if (!firstKeywordMatch) {
+      throw new Error('Query inválida: não foi possível identificar o comando SQL');
+    }
+
+    const firstKeyword = firstKeywordMatch[1].toUpperCase();
+
+    // Permitir apenas SELECT ou WITH (CTEs começam com WITH)
+    const allowedKeywords = ['SELECT', 'WITH'];
+    if (!allowedKeywords.includes(firstKeyword)) {
+      const forbiddenKeywords = [
+        'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP',
+        'GRANT', 'REVOKE', 'TRUNCATE', 'REPLACE', 'MERGE',
+        'SET', 'CALL', 'EXECUTE', 'DECLARE', 'LOCK', 'UNLOCK'
+      ];
+      
+      if (forbiddenKeywords.includes(firstKeyword)) {
+        throw new Error(
+          `Apenas queries SELECT ou WITH são permitidas para EXPLAIN. ` +
+          `Comando detectado: ${firstKeyword}. Para segurança, apenas consultas de leitura são permitidas.`
+        );
+      }
+      
+      throw new Error(
+        `Comando SQL não permitido para EXPLAIN: ${firstKeyword}. ` +
+        `Apenas queries SELECT ou WITH são permitidas.`
+      );
+    }
+
     const [explain] = await this.connection.execute(`EXPLAIN ${query}`);
 
     return {
