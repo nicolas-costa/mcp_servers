@@ -60,9 +60,18 @@ O MySQL Control Bridge suporta um **sistema flexível de configuração** com m�
 
 ### Ordem de Prioridade (da mais alta para mais baixa):
 
-1. **Variáveis no `.cursor/mcp.json`** (mais alta prioridade)
-2. **Arquivo `.cursor/.env`** (sobrescreve valores da raiz)
-3. **Arquivo `.env` na raiz do projeto** (base)
+1. **Variáveis diretas no `.cursor/mcp.json`** (mais alta prioridade) ✅
+   - Valores explícitos como `"MYSQL_HOST": "localhost"` têm prioridade máxima
+   - Variáveis com interpolação como `"MYSQL_HOST": "${DB_HOST}"` são resolvidas usando os fallbacks abaixo
+
+2. **Arquivo `.cursor/.env`** (fallback médio) ✅
+   - Usado para resolver interpolações ou valores não definidos no `mcp.json`
+   - Sobrescreve valores do `.env` da raiz
+
+3. **Arquivo `.env` na raiz do projeto** (fallback mais baixo) ✅
+   - Base genérica para todo o projeto
+   - Usado como último fallback para interpolações
+
 4. **Variáveis do sistema** (`process.env` já existentes)
 
 ### 1. Arquivos `.env`
@@ -83,7 +92,10 @@ DB_NAME=sua_base_dados
 DB_PASSWORD=senha_diferente_para_desenvolvimento
 ```
 
-O servidor carrega automaticamente esses arquivos na ordem correta. Valores em `.cursor/.env` sobrescrevem valores do `.env` da raiz.
+O servidor carrega automaticamente esses arquivos na ordem correta:
+1. Primeiro carrega `.env` da raiz (fallback baixo)
+2. Depois carrega `.cursor/.env` (sobrescreve raiz, mas não valores do `mcp.json`)
+3. Valores diretos no `mcp.json` sempre têm prioridade e nunca são sobrescritos
 
 ### 2. Interpolação de Variáveis no `.cursor/mcp.json`
 
@@ -142,6 +154,41 @@ DB_NAME=development_db
 - ✅ Fácil trocar ambientes mudando apenas o `.env`
 - ✅ Valores padrão com `${VAR:-default}`
 - ✅ Suporta referências entre variáveis
+
+**Exemplo prático da ordem de prioridade:**
+
+Se você tiver:
+
+**`.cursor/mcp.json`:**
+```json
+"MYSQL_HOST": "${DB_HOST}"
+```
+
+**`.cursor/.env`:**
+```env
+DB_HOST=dev.example.com
+```
+
+**`.env` (raiz):**
+```env
+DB_HOST=localhost
+```
+
+Resultado: `MYSQL_HOST` será `dev.example.com` (usa `.cursor/.env`, que tem prioridade sobre raiz)
+
+Se você tiver:
+
+**`.cursor/mcp.json`:**
+```json
+"MYSQL_HOST": "prod.example.com"  // valor direto
+```
+
+**`.cursor/.env`:**
+```env
+MYSQL_HOST=dev.example.com
+```
+
+Resultado: `MYSQL_HOST` será `prod.example.com` (valores diretos no JSON sempre ganham)
 
 ### Opção 2: Valores Diretos
 

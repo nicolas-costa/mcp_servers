@@ -11,9 +11,10 @@ const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
 
-// Carregar arquivos .env na ordem de prioridade:
-// 1. .env na raiz do projeto (base) - diretório que contém .cursor, ou process.cwd() como fallback
-// 2. .env em .cursor/ (sobrescreve valores da raiz)
+// Carregar arquivos .env na ordem de prioridade (da mais baixa para mais alta):
+// 1. .env na raiz do projeto (fallback mais baixo)
+// 2. .env em .cursor/ (fallback médio, sobrescreve raiz)
+// As variáveis do mcp.json são injetadas pelo Cursor depois e têm prioridade máxima
 function loadEnvFiles() {
   let loadedFiles = [];
   let currentDir = process.cwd();
@@ -38,24 +39,47 @@ function loadEnvFiles() {
     projectRoot = currentDir;
   }
   
-  // 1. Carregar .env da raiz do projeto primeiro (base)
+  // 1. Carregar .env da raiz do projeto primeiro (fallback mais baixo)
+  // override: false garante que não sobrescreve variáveis já existentes (do mcp.json)
   const rootEnvPath = path.join(projectRoot, '.env');
   if (fs.existsSync(rootEnvPath)) {
+    // Salvar valores já existentes antes de carregar
+    const existingBeforeRoot = {};
+    const envVarsToCheck = ['MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE'];
+    envVarsToCheck.forEach(key => {
+      if (process.env[key]) existingBeforeRoot[key] = process.env[key];
+    });
+    
     const result = dotenv.config({ path: rootEnvPath, override: false });
     if (!result.error) {
+      // Restaurar valores que já existiam (do mcp.json)
+      Object.keys(existingBeforeRoot).forEach(key => {
+        process.env[key] = existingBeforeRoot[key];
+      });
       loadedFiles.push(rootEnvPath);
-      console.error(`✅ Arquivo .env carregado (raiz): ${rootEnvPath}`);
+      console.error(`✅ Arquivo .env carregado (raiz - fallback): ${rootEnvPath}`);
     }
   }
   
-  // 2. Carregar .env de .cursor/ (sobrescreve valores da raiz), se existir
+  // 2. Carregar .env de .cursor/ (fallback médio, sobrescreve valores da raiz mas não do mcp.json)
   if (foundCursorDir) {
     const cursorEnvPath = path.join(projectRoot, '.cursor', '.env');
     if (fs.existsSync(cursorEnvPath)) {
+      // Salvar valores já existentes antes de carregar
+      const existingBeforeCursor = {};
+      const envVarsToCheck = ['MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE'];
+      envVarsToCheck.forEach(key => {
+        if (process.env[key]) existingBeforeCursor[key] = process.env[key];
+      });
+      
       const result = dotenv.config({ path: cursorEnvPath, override: true });
       if (!result.error) {
+        // Restaurar valores que já existiam (do mcp.json)
+        Object.keys(existingBeforeCursor).forEach(key => {
+          process.env[key] = existingBeforeCursor[key];
+        });
         loadedFiles.push(cursorEnvPath);
-        console.error(`✅ Arquivo .env carregado (.cursor): ${cursorEnvPath}`);
+        console.error(`✅ Arquivo .env carregado (.cursor - fallback médio): ${cursorEnvPath}`);
       }
     }
   }
@@ -98,6 +122,10 @@ function resolveEnvVar(value) {
 
 // Processar e resolver todas as variáveis de ambiente que contêm interpolação
 // Resolve recursivamente até que não haja mais interpolações
+// Ordem de prioridade na resolução:
+// 1. Variáveis diretas do mcp.json (não têm interpolação ou já foram resolvidas)
+// 2. Variáveis de .cursor/.env
+// 3. Variáveis de .env da raiz
 function resolveEnvVariables() {
   const maxIterations = 10; // Prevenir loops infinitos
   let iterations = 0;
@@ -107,7 +135,8 @@ function resolveEnvVariables() {
     changed = false;
     iterations++;
     
-    // Processar todas as variáveis de ambiente
+    // Processar todas as variáveis de ambiente que contêm interpolação
+    // As variáveis do mcp.json já estão no process.env e serão resolvidas aqui
     for (const varName in process.env) {
       const value = process.env[varName];
       if (typeof value === 'string' && value.includes('${')) {
