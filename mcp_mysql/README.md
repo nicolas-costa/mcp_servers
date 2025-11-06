@@ -54,6 +54,30 @@ MYSQL_PORT=3306              # Padrão: 3306
 MYSQL_PASSWORD=sua_senha     # Padrão: string vazia
 ```
 
+## Configuração das Variáveis de Ambiente
+
+O MySQL Control Bridge suporta **duas formas** de configurar as variáveis de ambiente:
+
+### 1. Arquivo `.env` (Opcional)
+
+Você pode criar um arquivo `.env` na raiz do seu projeto com as variáveis de ambiente:
+
+```env
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=seu_usuario
+MYSQL_PASSWORD=sua_senha
+MYSQL_DATABASE=sua_base_dados
+```
+
+O servidor tentará encontrar e carregar automaticamente o arquivo `.env` na raiz do projeto (ou em diretórios pais). Isso é útil quando você quer manter as credenciais do banco junto com o projeto.
+
+**Nota:** Se você usar tanto `.env` quanto variáveis no `.cursor/mcp.json`, as variáveis do `.cursor/mcp.json` terão prioridade (elas sobrescrevem as do `.env`).
+
+### 2. Variáveis no `.cursor/mcp.json` (Recomendado)
+
+Veja a seção "Configuração no Cursor IDE" abaixo para usar variáveis diretamente no arquivo de configuração do MCP.
+
 ## Configuração no Cursor IDE
 
 Crie o arquivo `.cursor/mcp.json` na raiz do seu workspace com o conteúdo abaixo:
@@ -78,6 +102,21 @@ Crie o arquivo `.cursor/mcp.json` na raiz do seu workspace com o conteúdo abaix
   }
 }
 ```
+
+**Alternativa usando `.env`:** Se você preferir usar um arquivo `.env` na raiz do projeto, pode omitir o campo `env` e o servidor carregará as variáveis automaticamente do `.env`:
+
+```json
+{
+  "mcpServers": {
+    "mysql": {
+      "command": "npx",
+      "args": ["-y", "mysql_control_bridge"]
+    }
+  }
+}
+```
+
+E então crie um `.env` na raiz com as variáveis (lembre-se de adicionar `.env` ao `.gitignore` para não versionar credenciais).
 
 ### Por que usar `.cursor/mcp.json`?
 

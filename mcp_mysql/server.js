@@ -7,6 +7,44 @@ const {
   CallToolRequestSchema
 } = require('@modelcontextprotocol/sdk/types.js');
 const mysql = require('mysql2/promise');
+const path = require('path');
+const fs = require('fs');
+const dotenv = require('dotenv');
+
+// Tentar carregar arquivo .env da raiz do projeto
+// Procura em diretórios pais até encontrar um .env ou chegar na raiz do sistema
+function loadEnvFile() {
+  let currentDir = process.cwd();
+  const rootPath = path.parse(currentDir).root;
+  
+  // Tentar encontrar .env subindo pelos diretórios pais
+  while (currentDir !== rootPath) {
+    const envPath = path.join(currentDir, '.env');
+    if (fs.existsSync(envPath)) {
+      const result = dotenv.config({ path: envPath });
+      if (!result.error) {
+        console.error(`✅ Arquivo .env carregado: ${envPath}`);
+        return true;
+      }
+    }
+    currentDir = path.dirname(currentDir);
+  }
+  
+  // Se não encontrou, tentar no diretório atual
+  const envPath = path.join(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    const result = dotenv.config({ path: envPath });
+    if (!result.error) {
+      console.error(`✅ Arquivo .env carregado: ${envPath}`);
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// Carregar .env se existir (opcional - não gera erro se não encontrar)
+loadEnvFile();
 
 class MySQLControlBridge {
   constructor() {
