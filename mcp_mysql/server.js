@@ -11,40 +11,125 @@ const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
 
-// Tentar carregar arquivo .env da raiz do projeto
-// Procura em diretórios pais até encontrar um .env ou chegar na raiz do sistema
-function loadEnvFile() {
+// Carregar arquivos .env na ordem de prioridade:
+// 1. .env na raiz do projeto (base) - diretório que contém .cursor, ou process.cwd() como fallback
+// 2. .env em .cursor/ (sobrescreve valores da raiz)
+function loadEnvFiles() {
+  let loadedFiles = [];
   let currentDir = process.cwd();
   const rootPath = path.parse(currentDir).root;
   
-  // Tentar encontrar .env subindo pelos diretórios pais
-  while (currentDir !== rootPath) {
-    const envPath = path.join(currentDir, '.env');
-    if (fs.existsSync(envPath)) {
-      const result = dotenv.config({ path: envPath });
+  // Encontrar a raiz do projeto (diretório que contém .cursor ou usar currentDir como fallback)
+  let projectRoot = currentDir;
+  let foundCursorDir = false;
+  
+  // Procurar diretório .cursor subindo pelos diretórios pais
+  while (projectRoot !== rootPath) {
+    const cursorDir = path.join(projectRoot, '.cursor');
+    if (fs.existsSync(cursorDir) && fs.statSync(cursorDir).isDirectory()) {
+      foundCursorDir = true;
+      break;
+    }
+    projectRoot = path.dirname(projectRoot);
+  }
+  
+  // Se não encontrou .cursor, usar o diretório atual como raiz
+  if (!foundCursorDir) {
+    projectRoot = currentDir;
+  }
+  
+  // 1. Carregar .env da raiz do projeto primeiro (base)
+  const rootEnvPath = path.join(projectRoot, '.env');
+  if (fs.existsSync(rootEnvPath)) {
+    const result = dotenv.config({ path: rootEnvPath, override: false });
+    if (!result.error) {
+      loadedFiles.push(rootEnvPath);
+      console.error(`✅ Arquivo .env carregado (raiz): ${rootEnvPath}`);
+    }
+  }
+  
+  // 2. Carregar .env de .cursor/ (sobrescreve valores da raiz), se existir
+  if (foundCursorDir) {
+    const cursorEnvPath = path.join(projectRoot, '.cursor', '.env');
+    if (fs.existsSync(cursorEnvPath)) {
+      const result = dotenv.config({ path: cursorEnvPath, override: true });
       if (!result.error) {
-        console.error(`✅ Arquivo .env carregado: ${envPath}`);
-        return true;
+        loadedFiles.push(cursorEnvPath);
+        console.error(`✅ Arquivo .env carregado (.cursor): ${cursorEnvPath}`);
       }
     }
-    currentDir = path.dirname(currentDir);
   }
   
-  // Se não encontrou, tentar no diretório atual
-  const envPath = path.join(process.cwd(), '.env');
-  if (fs.existsSync(envPath)) {
-    const result = dotenv.config({ path: envPath });
-    if (!result.error) {
-      console.error(`✅ Arquivo .env carregado: ${envPath}`);
-      return true;
+  return loadedFiles;
+}
+
+// Resolver interpolação de variáveis: ${VAR} e ${VAR:-default}
+// Usa valores do process.env (que inclui valores do mcp.json e dos .env carregados)
+function resolveEnvVar(value) {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  
+  // Padrão: ${VAR} ou ${VAR:-default}
+  const pattern = /\$\{([^}]+)\}/g;
+  
+  return value.replace(pattern, (match, varExpr) => {
+    // Verificar se tem valor padrão: VAR:-default
+    const parts = varExpr.split(':-');
+    const varName = parts[0].trim();
+    const defaultValue = parts.length > 1 ? parts.slice(1).join(':-') : undefined;
+    
+    // Buscar no process.env
+    const envValue = process.env[varName];
+    
+    if (envValue !== undefined && envValue !== '') {
+      return envValue;
+    }
+    
+    // Se não encontrou e tem valor padrão, usar padrão
+    if (defaultValue !== undefined) {
+      return defaultValue;
+    }
+    
+    // Se não encontrou e não tem padrão, retornar a string original ou vazio
+    return process.env[varName] || '';
+  });
+}
+
+// Processar e resolver todas as variáveis de ambiente que contêm interpolação
+// Resolve recursivamente até que não haja mais interpolações
+function resolveEnvVariables() {
+  const maxIterations = 10; // Prevenir loops infinitos
+  let iterations = 0;
+  let changed = true;
+  
+  while (changed && iterations < maxIterations) {
+    changed = false;
+    iterations++;
+    
+    // Processar todas as variáveis de ambiente
+    for (const varName in process.env) {
+      const value = process.env[varName];
+      if (typeof value === 'string' && value.includes('${')) {
+        const resolved = resolveEnvVar(value);
+        if (resolved !== value) {
+          process.env[varName] = resolved;
+          changed = true;
+        }
+      }
     }
   }
   
-  return false;
+  if (iterations >= maxIterations) {
+    console.error('⚠️ Aviso: Limite de iterações atingido ao resolver variáveis de ambiente');
+  }
 }
 
-// Carregar .env se existir (opcional - não gera erro se não encontrar)
-loadEnvFile();
+// Carregar arquivos .env na ordem correta
+loadEnvFiles();
+
+// Resolver interpolações nas variáveis de ambiente
+resolveEnvVariables();
 
 class MySQLControlBridge {
   constructor() {

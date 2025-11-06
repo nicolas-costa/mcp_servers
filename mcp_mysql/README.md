@@ -56,41 +56,103 @@ MYSQL_PASSWORD=sua_senha     # Padrão: string vazia
 
 ## Configuração das Variáveis de Ambiente
 
-O MySQL Control Bridge suporta **duas formas** de configurar as variáveis de ambiente:
+O MySQL Control Bridge suporta um **sistema flexível de configuração** com múltiplos níveis de fallback e suporte a interpolação de variáveis:
 
-### 1. Arquivo `.env` (Opcional)
+### Ordem de Prioridade (da mais alta para mais baixa):
 
-Você pode criar um arquivo `.env` na raiz do seu projeto com as variáveis de ambiente:
+1. **Variáveis no `.cursor/mcp.json`** (mais alta prioridade)
+2. **Arquivo `.cursor/.env`** (sobrescreve valores da raiz)
+3. **Arquivo `.env` na raiz do projeto** (base)
+4. **Variáveis do sistema** (`process.env` já existentes)
 
+### 1. Arquivos `.env`
+
+Você pode criar arquivos `.env` em até dois locais:
+
+#### `.env` na raiz do projeto (base)
 ```env
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=seu_usuario
-MYSQL_PASSWORD=sua_senha
-MYSQL_DATABASE=sua_base_dados
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=seu_usuario
+DB_PASSWORD=sua_senha
+DB_NAME=sua_base_dados
 ```
 
-O servidor tentará encontrar e carregar automaticamente o arquivo `.env` na raiz do projeto (ou em diretórios pais). Isso é útil quando você quer manter as credenciais do banco junto com o projeto.
+#### `.cursor/.env` (opcional, sobrescreve valores da raiz)
+```env
+DB_PASSWORD=senha_diferente_para_desenvolvimento
+```
 
-**Nota:** Se você usar tanto `.env` quanto variáveis no `.cursor/mcp.json`, as variáveis do `.cursor/mcp.json` terão prioridade (elas sobrescrevem as do `.env`).
+O servidor carrega automaticamente esses arquivos na ordem correta. Valores em `.cursor/.env` sobrescrevem valores do `.env` da raiz.
 
-### 2. Variáveis no `.cursor/mcp.json` (Recomendado)
+### 2. Interpolação de Variáveis no `.cursor/mcp.json`
 
-Veja a seção "Configuração no Cursor IDE" abaixo para usar variáveis diretamente no arquivo de configuração do MCP.
+Você pode usar interpolação de variáveis no campo `env` do `mcp.json`:
+
+- `${VAR}` - Referencia uma variável de ambiente
+- `${VAR:-default}` - Usa um valor padrão se a variável não existir
+
+Isso permite referenciar variáveis definidas nos arquivos `.env` ou outras variáveis de ambiente.
 
 ## Configuração no Cursor IDE
 
-Crie o arquivo `.cursor/mcp.json` na raiz do seu workspace com o conteúdo abaixo:
+Crie o arquivo `.cursor/mcp.json` na raiz do seu workspace. Você tem duas opções:
+
+### Opção 1: Usando Interpolação (Recomendado)
+
+Use interpolação para referenciar variáveis dos arquivos `.env`:
 
 ```json
 {
   "mcpServers": {
     "mysql": {
       "command": "npx",
-      "args": [
-        "-y",
-        "mysql_control_bridge"
-      ],
+      "args": ["-y", "mysql_control_bridge"],
+      "env": {
+        "MYSQL_HOST": "${DB_HOST}",
+        "MYSQL_PORT": "${DB_PORT:-3306}",
+        "MYSQL_USER": "${DB_USER}",
+        "MYSQL_PASSWORD": "${DB_PASSWORD}",
+        "MYSQL_DATABASE": "${DB_NAME}"
+      }
+    }
+  }
+}
+```
+
+E crie um `.env` na raiz com as variáveis base:
+```env
+DB_HOST=localhost
+DB_USER=seu_usuario
+DB_PASSWORD=sua_senha
+DB_NAME=sua_base_dados
+DB_PORT=3306
+```
+
+Ou crie um `.cursor/.env` para valores específicos do workspace:
+```env
+DB_HOST=localhost
+DB_USER=dev_user
+DB_PASSWORD=dev_pass
+DB_NAME=development_db
+```
+
+**Vantagens:**
+- ✅ Credenciais não ficam versionadas no `.cursor/mcp.json`
+- ✅ Fácil trocar ambientes mudando apenas o `.env`
+- ✅ Valores padrão com `${VAR:-default}`
+- ✅ Suporta referências entre variáveis
+
+### Opção 2: Valores Diretos
+
+Você também pode definir valores diretamente no `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mysql": {
+      "command": "npx",
+      "args": ["-y", "mysql_control_bridge"],
       "env": {
         "MYSQL_HOST": "localhost",
         "MYSQL_PORT": "3306",
@@ -103,7 +165,9 @@ Crie o arquivo `.cursor/mcp.json` na raiz do seu workspace com o conteúdo abaix
 }
 ```
 
-**Alternativa usando `.env`:** Se você preferir usar um arquivo `.env` na raiz do projeto, pode omitir o campo `env` e o servidor carregará as variáveis automaticamente do `.env`:
+### Opção 3: Apenas `.env` (sem `env` no mcp.json)
+
+Se preferir usar apenas arquivos `.env`, omita o campo `env`:
 
 ```json
 {
@@ -116,7 +180,16 @@ Crie o arquivo `.cursor/mcp.json` na raiz do seu workspace com o conteúdo abaix
 }
 ```
 
-E então crie um `.env` na raiz com as variáveis (lembre-se de adicionar `.env` ao `.gitignore` para não versionar credenciais).
+E crie um `.env` na raiz com as variáveis `MYSQL_*`:
+```env
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=seu_usuario
+MYSQL_PASSWORD=sua_senha
+MYSQL_DATABASE=sua_base_dados
+```
+
+**Importante:** Lembre-se de adicionar `.env` e `.cursor/.env` ao `.gitignore` para não versionar credenciais!
 
 ### Por que usar `.cursor/mcp.json`?
 
@@ -126,8 +199,9 @@ E então crie um `.env` na raiz com as variáveis (lembre-se de adicionar `.env`
 - ✅ **Sem instalação global**: Use `npx` para executar diretamente do npm registry
 - ✅ **Flexível**: A configuração vive junto do projeto e pode variar por workspace
 
-### Exemplo com Múltiplos Ambientes
+### Exemplo com Múltiplos Ambientes usando Interpolação
 
+**`.cursor/mcp.json`:**
 ```json
 {
   "mcpServers": {
@@ -135,25 +209,60 @@ E então crie um `.env` na raiz com as variáveis (lembre-se de adicionar `.env`
       "command": "npx",
       "args": ["-y", "mysql_control_bridge"],
       "env": {
-        "MYSQL_HOST": "localhost",
-        "MYSQL_USER": "dev_user",
-        "MYSQL_PASSWORD": "dev_pass",
-        "MYSQL_DATABASE": "development_db"
+        "MYSQL_HOST": "${DB_HOST_DEV:-localhost}",
+        "MYSQL_USER": "${DB_USER_DEV}",
+        "MYSQL_PASSWORD": "${DB_PASSWORD_DEV}",
+        "MYSQL_DATABASE": "${DB_NAME_DEV}"
       }
     },
     "mysql-prod": {
       "command": "npx",
       "args": ["-y", "mysql_control_bridge"],
       "env": {
-        "MYSQL_HOST": "prod.example.com",
-        "MYSQL_USER": "prod_user",
-        "MYSQL_PASSWORD": "prod_pass",
-        "MYSQL_DATABASE": "production_db"
+        "MYSQL_HOST": "${DB_HOST_PROD}",
+        "MYSQL_USER": "${DB_USER_PROD}",
+        "MYSQL_PASSWORD": "${DB_PASSWORD_PROD}",
+        "MYSQL_DATABASE": "${DB_NAME_PROD}"
       }
     }
   }
 }
 ```
+
+**`.cursor/.env`** (valores específicos do workspace):
+```env
+DB_HOST_DEV=localhost
+DB_USER_DEV=dev_user
+DB_PASSWORD_DEV=dev_pass
+DB_NAME_DEV=development_db
+
+DB_HOST_PROD=prod.example.com
+DB_USER_PROD=prod_user
+DB_PASSWORD_PROD=prod_pass
+DB_NAME_PROD=production_db
+```
+
+### Exemplos de Interpolação
+
+**Valor padrão:**
+```json
+"MYSQL_PORT": "${DB_PORT:-3306}"
+```
+Se `DB_PORT` não existir, usa `3306` como padrão.
+
+**Referência simples:**
+```json
+"MYSQL_HOST": "${DB_HOST}"
+```
+Usa o valor de `DB_HOST` dos arquivos `.env`.
+
+**Múltiplas referências:**
+```env
+# .env
+BASE_HOST=prod.example.com
+MYSQL_HOST="${BASE_HOST}"
+```
+O sistema resolve interpolações iterativamente, permitindo referências encadeadas.
 
 ## Ferramentas Disponíveis
 
